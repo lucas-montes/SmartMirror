@@ -36,7 +36,11 @@
               pkg-config
               rust-bin-custom
               sqlitestudio
+
+              nodejs_23
+              electron
             ];
+            ELECTRON_OVERRIDE_DIST_PATH = "${electron}/bin";
           };
       }
     );
