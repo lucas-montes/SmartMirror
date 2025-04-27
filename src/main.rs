@@ -5,10 +5,10 @@ mod listen;
 mod talk;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let talker = Talker::new();
+    // let talker = Talker::new();
 
     let listener = Listener::new();
 
-    listener.audio_to_text();
+    listener.run().expect("listenner running brake");
     Ok(())
 }
