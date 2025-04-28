@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 
+#[derive(Debug)]
 pub enum TalkerError {
     TextToAudio(String),
     StreamCreation(String),
@@ -110,5 +111,10 @@ impl Talker {
             samples_len as f32 / (self.sample_rate() as f32 * self.channels() as f32);
         thread::sleep(std::time::Duration::from_secs_f32(duration_secs));
         Ok(())
+    }
+
+    pub fn run(&self, text: String) -> Result<(), TalkerError> {
+        let samples = self.text_to_audio(text)?;
+        self.play_audio(samples)
     }
 }

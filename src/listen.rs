@@ -34,7 +34,7 @@ impl Listener {
     }
 
     pub fn new() -> Self {
-        let model_path = std::env::var("MODEL").expect("tts model not found");
+        let model_path = std::env::var("MODEL").expect("stt model not found");
 
         let device = cpal::default_host()
             .default_input_device()

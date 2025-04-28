@@ -50,23 +50,15 @@
               alsa-utils
               alsa-lib
               openssl
-              # cargo-cache
-              # cargo-expand
-              # cargo-watch
               pkg-config
               rust-bin-custom
 
-              # sqlitestudio
               nodejs_23
               electron
 
               libclang
               clang
-              # stdenv.cc
               cmake
-              # gcc
-              # onnxruntime
-              # espeak-ng
             ];
             ELECTRON_OVERRIDE_DIST_PATH = "${electron}/bin";
             SPANISH_TTS_MODEL = "${spanishTtsModel}";
@@ -79,19 +71,7 @@
             ];
 
             MODEL = model;
-
             LIBCLANG_PATH = "${libclang.lib}/lib";
-
-            #             # Ensure libraries are available at runtime
-            # LD_LIBRARY_PATH = "${pkgs.onnxruntime}/lib:${pkgs.alsa-lib}/lib:${pkgs.openssl}/lib:${pkgs.espeak-ng}/lib:${pkgs.llvmPackages.libclang.lib}/lib";
-            # # Set LIBCLANG_PATH for bindgen
-            # LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-
-            # # Ensure headers are found
-            # C_INCLUDE_PATH = "${pkgs.espeak-ng}/include:${pkgs.stdenv.cc.libc}/include:${pkgs.llvmPackages.libclang.lib}/include";
-            # # Pass include paths to bindgen and clang
-            # BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.espeak-ng}/include -I${pkgs.stdenv.cc.libc}/include -I${pkgs.llvmPackages.libclang.lib}/include";
-            # Ensure clang uses the correct sysroot
             CLANG_PATH = "${clang}/bin/clang";
           };
       }
