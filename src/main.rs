@@ -7,8 +7,9 @@ mod talk;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = Listener::new();
 
-    listener.run().expect("listenner running brake");
     let talker = Talker::new();
+
+    listener.run().expect("listenner running brake");
     talker
         .run("Este es el comando que he pedido que digas".into())
         .expect("running the talker failed");

@@ -36,6 +36,14 @@ impl Listener {
     pub fn new() -> Self {
         let model_path = std::env::var("MODEL").expect("stt model not found");
 
+        println!(
+            "input devices {:?}",
+            cpal::default_host()
+                .input_devices()
+                .unwrap()
+                .map(|d| d.name())
+                .collect::<Vec<_>>()
+        );
         let device = cpal::default_host()
             .default_input_device()
             .expect("No input device connected");

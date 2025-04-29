@@ -92,6 +92,7 @@
             buildInputs = [
               alsa-utils
               alsa-lib
+              #alsa-plugins
               openssl
               pkg-config
               rust-bin-custom
@@ -104,13 +105,14 @@
               cmake
             ];
             #            ELECTRON_OVERRIDE_DIST_PATH = "${electron}/bin";
-            SPANISH_TTS_MODEL = "${spanishTtsModel}";
-            SPANISH_TTS_CONFIG = "${spanishTtsConfig}";
+            SPANISH_TTS_MODEL = spanishTtsModel;
+            SPANISH_TTS_CONFIG = spanishTtsConfig;
 
             RUSTFLAGS = "-L${voskLib}";
             LD_LIBRARY_PATH = lib.makeLibraryPath [
               pkgs.stdenv.cc.cc
               voskLib
+              #              pkgs.alsa-lib
             ];
 
             MODEL = model;

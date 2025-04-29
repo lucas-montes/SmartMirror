@@ -34,8 +34,17 @@ impl Talker {
             .into();
 
         let model = VitsModel::new(config_path, &onxx_path).expect("Models not found");
-        let host = cpal::default_host();
-        let device = host
+
+        println!(
+            "{:?}",
+            cpal::default_host()
+                .output_devices()
+                .unwrap()
+                .map(|d| d.name())
+                .collect::<Vec<_>>()
+        );
+
+        let device = cpal::default_host()
             .default_output_device()
             .expect("No output device available");
 
