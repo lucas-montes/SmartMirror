@@ -1,6 +1,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
         Arc, Mutex,
     },
     thread,
@@ -11,7 +12,8 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     ChannelCount,
 };
-use tracing::{debug, error, info, trace, warn};
+use crate::ui;
+use tracing::{debug, error, trace, warn};
 use dasp::{sample::ToSample, Sample};
 use vosk::{DecodingState, Model, Recognizer};
 
@@ -47,7 +49,7 @@ impl Listener {
         let config = device
             .default_input_config()
             .expect("Failed to load default input config");
-        info!(
+        debug!(
             device = %device.name().unwrap_or_else(|_| "<unknown>".into()),
             channels = config.channels(),
             sample_rate = config.sample_rate().0,
@@ -73,12 +75,19 @@ impl Listener {
         }
     }
 
-    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Listens until a stop word is heard, sending each transcript on `transcripts`.
+    /// Audio is ignored while `speaking` is set, so the talker's own voice isn't transcribed.
+    pub fn run(
+        &self,
+        transcripts: Sender<String>,
+        speaking: Arc<AtomicBool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&running);
         let channels = self.channels();
         let recognizer = self.recognizer.clone();
         let max_alternatives = self.max_alternatives;
+        let mut was_speaking = false;
 
         // Start the input stream
         let stream = self.device.build_input_stream(
@@ -88,14 +97,27 @@ impl Listener {
                     return;
                 }
                 let mut recognizer = recognizer.lock().unwrap();
+                if speaking.load(Ordering::SeqCst) {
+                    was_speaking = true;
+                    return;
+                }
+                if was_speaking {
+                    // Throw away anything half-recognized from before/while talking
+                    debug!("talker finished, resuming listening");
+                    recognizer.reset();
+                    was_speaking = false;
+                }
                 if let Some(text) = recognize(&mut recognizer, data, channels, max_alternatives) {
-                    // Check for stop commands
-                    if text.to_lowercase().contains("stop") || text.to_lowercase().contains("exit")
-                    {
-                        info!(%text, "stop word heard");
+                    if is_stop_command(&text) {
+                        debug!(%text, "stop word heard");
                         running_clone.store(false, Ordering::SeqCst);
                     } else {
-                        info!(%text, "transcribed");
+                        debug!(%text, "transcribed");
+                        ui::you(&text);
+                        if transcripts.send(text).is_err() {
+                            warn!("llm channel closed, stopping listener");
+                            running_clone.store(false, Ordering::SeqCst);
+                        }
                     }
                     recognizer.reset(); // Reset for the next utterance
                 };
@@ -111,6 +133,12 @@ impl Listener {
         }
         Ok(())
     }
+}
+
+fn is_stop_command(text: &str) -> bool {
+    text.to_lowercase()
+        .split_whitespace()
+        .any(|w| matches!(w, "stop" | "exit" | "basta" | "detente"))
 }
 fn recognize<T: Sample + ToSample<i16>>(
     recognizer: &mut Recognizer,

@@ -5,11 +5,12 @@ use sherpa_onnx::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 #[derive(Debug)]
 pub enum TalkerError {
@@ -76,10 +77,10 @@ impl Talker {
             ..Default::default()
         };
 
-        info!(dir = %model_dir.display(), %lang, speaker, speed, "loading supertonic model");
+        debug!(dir = %model_dir.display(), %lang, speaker, speed, "loading supertonic model");
         let start = Instant::now();
         let tts = OfflineTts::create(&config).expect("Failed to create OfflineTts");
-        info!(
+        debug!(
             elapsed = ?start.elapsed(),
             sample_rate = tts.sample_rate(),
             speakers = tts.num_speakers(),
@@ -97,10 +98,10 @@ impl Talker {
             .default_output_device()
             .expect("No output device available");
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
-        info!(device = %device_name, "using output device");
+        debug!(device = %device_name, "using output device");
 
         match device.default_output_config() {
-            Ok(c) => info!(
+            Ok(c) => debug!(
                 channels = c.channels(),
                 sample_rate = c.sample_rate().0,
                 format = ?c.sample_format(),
@@ -137,7 +138,7 @@ impl Talker {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub fn text_to_audio(&mut self, text: String) -> Result<Vec<f32>, TalkerError> {
         let start = Instant::now();
         let mut extra = HashMap::new();
@@ -169,7 +170,7 @@ impl Talker {
 
         let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
         let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
-        info!(
+        debug!(
             elapsed = ?start.elapsed(),
             samples = samples.len(),
             sample_rate,
@@ -198,7 +199,7 @@ impl Talker {
         let written = Arc::new(AtomicUsize::new(0));
         let (cb_count, cb_written) = (callbacks.clone(), written.clone());
 
-        info!(
+        debug!(
             channels = self.channels(),
             sample_rate = self.sample_rate(),
             buffer = ?self.cpal_config.buffer_size,
@@ -237,7 +238,7 @@ impl Talker {
             error!(error = %err, "failed to start output stream");
             TalkerError::StreamPlay(err.to_string())
         })?;
-        info!("stream playing");
+        debug!("stream playing");
 
         let duration_secs =
             samples_len as f32 / (self.sample_rate() as f32 * self.channels() as f32);
@@ -245,7 +246,7 @@ impl Talker {
         thread::sleep(std::time::Duration::from_secs_f32(duration_secs));
 
         let (callbacks, written) = (callbacks.load(Ordering::Relaxed), written.load(Ordering::Relaxed));
-        info!(callbacks, written, total = samples_len, "playback finished");
+        debug!(callbacks, written, total = samples_len, "playback finished");
         if callbacks == 0 {
             warn!("output callback never ran — device didn't pull any audio");
         } else if written < samples_len {
@@ -257,8 +258,23 @@ impl Talker {
         Ok(())
     }
 
-    pub fn run(&mut self, text: String) -> Result<(), TalkerError> {
+    pub fn say(&mut self, text: String) -> Result<(), TalkerError> {
         let samples = self.text_to_audio(text)?;
         self.play_audio(samples)
+    }
+
+    /// Speaks every reply received. Sets `speaking` while audio is being produced
+    /// so the listener can mute itself. Returns when the input channel closes.
+    pub fn run(mut self, replies: Receiver<String>, speaking: Arc<AtomicBool>) {
+        for text in replies {
+            speaking.store(true, Ordering::SeqCst);
+            if let Err(e) = self.say(text) {
+                error!(error = ?e, "failed to speak reply");
+            }
+            // Small tail so the room echo dies down before the mic comes back
+            thread::sleep(std::time::Duration::from_millis(300));
+            speaking.store(false, Ordering::SeqCst);
+        }
+        debug!("talker stopped");
     }
 }
