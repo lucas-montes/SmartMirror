@@ -1,17 +1,17 @@
 use std::{
-    io::Write,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    ChannelCount, SampleFormat,
+    ChannelCount,
 };
+use tracing::{debug, error, info, trace, warn};
 use dasp::{sample::ToSample, Sample};
 use vosk::{DecodingState, Model, Recognizer};
 
@@ -36,14 +36,10 @@ impl Listener {
     pub fn new() -> Self {
         let model_path = std::env::var("MODEL").expect("stt model not found");
 
-        println!(
-            "input devices {:?}",
-            cpal::default_host()
-                .input_devices()
-                .unwrap()
-                .map(|d| d.name())
-                .collect::<Vec<_>>()
-        );
+        if let Ok(devices) = cpal::default_host().input_devices() {
+            let names: Vec<_> = devices.filter_map(|d| d.name().ok()).collect();
+            debug!(?names, "available input devices");
+        }
         let device = cpal::default_host()
             .default_input_device()
             .expect("No input device connected");
@@ -51,6 +47,13 @@ impl Listener {
         let config = device
             .default_input_config()
             .expect("Failed to load default input config");
+        info!(
+            device = %device.name().unwrap_or_else(|_| "<unknown>".into()),
+            channels = config.channels(),
+            sample_rate = config.sample_rate().0,
+            format = ?config.sample_format(),
+            "using input device"
+        );
 
         let model = Model::new(model_path).expect("Could not create the model");
         let mut recognizer = Recognizer::new(&model, config.sample_rate().0 as f32)
@@ -89,9 +92,10 @@ impl Listener {
                     // Check for stop commands
                     if text.to_lowercase().contains("stop") || text.to_lowercase().contains("exit")
                     {
+                        info!(%text, "stop word heard");
                         running_clone.store(false, Ordering::SeqCst);
                     } else {
-                        println!("Transcribed: {}", text);
+                        info!(%text, "transcribed");
                     }
                     recognizer.reset(); // Reset for the next utterance
                 };
@@ -126,7 +130,7 @@ fn recognize<T: Sample + ToSample<i16>>(
     let state = match recognizer.accept_waveform(&data) {
         Ok(state) => state,
         Err(e) => {
-            eprintln!("Error accepting waveform: {:?}", e);
+            error!(error = ?e, "error accepting waveform");
             return None;
         }
     };
@@ -138,19 +142,19 @@ fn recognize<T: Sample + ToSample<i16>>(
         }
         DecodingState::Finalized => {
             let result = recognizer.result();
-            println!("result {:?}", &result);
             let text = match max_alternatives.eq(&0) {
                 true => result.single().unwrap().text,
                 false => result.multiple().unwrap().alternatives[0].text,
             };
             if text.is_empty() {
+                trace!("empty utterance");
                 None
             } else {
                 Some(text.to_owned())
             }
         }
         DecodingState::Failed => {
-            eprintln!("Recognition failed");
+            warn!("recognition failed");
             None
         }
     }
@@ -168,5 +172,5 @@ fn stereo_to_mono(input_data: &[i16]) -> Vec<i16> {
 }
 
 fn err_fn(err: cpal::StreamError) {
-    eprintln!("An error occurred on the audio stream: {}", err);
+    error!(error = %err, "input stream error");
 }
