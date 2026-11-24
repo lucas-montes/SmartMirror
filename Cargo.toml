@@ -8,6 +8,7 @@ cpal = "0.15.3"
 hound = "3.5.1"
 dasp = "0.11"
 vosk = "0.3.1"
-piper-rs = "0.2.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+sherpa-onnx = { version = "2.0.3", default-features = false, features = ["static"] }
+serde_json = "1.0.154"

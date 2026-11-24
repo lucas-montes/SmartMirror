@@ -1,11 +1,15 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use piper_rs::Piper;
+use sherpa_onnx::{
+    GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig,
+    OfflineTtsSupertonicModelConfig,
+};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug)]
 pub enum TalkerError {
@@ -15,7 +19,10 @@ pub enum TalkerError {
 }
 
 pub struct Talker {
-    piper: Piper,
+    tts: OfflineTts,
+    lang: String,
+    speaker: i32,
+    speed: f32,
     cpal_config: cpal::StreamConfig,
     device: cpal::Device,
 }
@@ -30,18 +37,54 @@ impl Talker {
 
     #[instrument(name = "talker_new", skip_all)]
     pub fn new() -> Self {
-        let config_path: PathBuf = std::env::var("SPANISH_TTS_CONFIG")
-            .expect("tts config not found")
+        let model_dir: PathBuf = std::env::var("TTS_MODEL_DIR")
+            .expect("TTS_MODEL_DIR not set")
             .into();
-        let onxx_path: PathBuf = std::env::var("SPANISH_TTS_MODEL")
-            .expect("tts model not found")
-            .into();
-        info!(model = %onxx_path.display(), config = %config_path.display(), "loading piper model");
+        let lang = std::env::var("TTS_LANG").unwrap_or_else(|_| "hr".into());
+        // Supertonic 3 ships 10 voices (0..=9)
+        let speaker: i32 = std::env::var("TTS_SPEAKER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let speed: f32 = std::env::var("TTS_SPEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0);
 
+        let file = |name: &str| -> Option<String> {
+            let p = model_dir.join(name);
+            if !p.exists() {
+                error!(path = %p.display(), "missing tts model file");
+            }
+            Some(p.to_string_lossy().into_owned())
+        };
+        let config = OfflineTtsConfig {
+            model: OfflineTtsModelConfig {
+                supertonic: OfflineTtsSupertonicModelConfig {
+                    duration_predictor: file("duration_predictor.int8.onnx"),
+                    text_encoder: file("text_encoder.int8.onnx"),
+                    vector_estimator: file("vector_estimator.int8.onnx"),
+                    vocoder: file("vocoder.int8.onnx"),
+                    tts_json: file("tts.json"),
+                    unicode_indexer: file("unicode_indexer.bin"),
+                    voice_style: file("voice.bin"),
+                },
+                num_threads: 2,
+                debug: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        info!(dir = %model_dir.display(), %lang, speaker, speed, "loading supertonic model");
         let start = Instant::now();
-        // NOTE: 0.2.0 takes (model, config), the reverse of 0.1.x
-        let piper = Piper::new(&onxx_path, &config_path).expect("Models not found");
-        info!(elapsed = ?start.elapsed(), "piper model loaded");
+        let tts = OfflineTts::create(&config).expect("Failed to create OfflineTts");
+        info!(
+            elapsed = ?start.elapsed(),
+            sample_rate = tts.sample_rate(),
+            speakers = tts.num_speakers(),
+            "tts model loaded"
+        );
 
         let host = cpal::default_host();
         debug!(host = ?host.id(), "audio host");
@@ -85,7 +128,10 @@ impl Talker {
         };
 
         Self {
-            piper,
+            tts,
+            lang,
+            speaker,
+            speed,
             cpal_config: config,
             device,
         }
@@ -94,15 +140,32 @@ impl Talker {
     #[instrument(skip(self))]
     pub fn text_to_audio(&mut self, text: String) -> Result<Vec<f32>, TalkerError> {
         let start = Instant::now();
-        // create(text, is_phonemes, speaker_id, length_scale, noise_scale, noise_w)
-        // length_scale controls speed: < 1.0 faster, > 1.0 slower (None = model default)
-        let (samples, sample_rate) = self
-            .piper
-            .create(&text, false, None, None, None, None)
-            .map_err(|err| {
-                error!(error = %err, "synthesis failed");
-                TalkerError::TextToAudio(err.to_string())
+        let mut extra = HashMap::new();
+        extra.insert("lang".to_string(), serde_json::json!(self.lang));
+        let gen_config = GenerationConfig {
+            sid: self.speaker,
+            num_steps: 8, // diffusion steps: more = better quality, slower
+            speed: self.speed,
+            extra: Some(extra),
+            ..Default::default()
+        };
+
+        let audio = self
+            .tts
+            .generate_with_config(
+                &text,
+                &gen_config,
+                Some(|_samples: &[f32], progress: f32| -> bool {
+                    trace!(progress, "synthesis progress");
+                    true
+                }),
+            )
+            .ok_or_else(|| {
+                error!("synthesis failed");
+                TalkerError::TextToAudio("supertonic generation failed".into())
             })?;
+        let samples = audio.samples().to_vec();
+        let sample_rate = audio.sample_rate() as u32;
 
         let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
         let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();

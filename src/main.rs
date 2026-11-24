@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("listener finished, starting talker");
 
     talker
-        .run("Este es el comando que he pedido que digas".into())
+        .run("Ovo je naredba koju sam tražio da kažeš".into())
         .expect("running the talker failed");
     info!("done");
     Ok(())

@@ -56,13 +56,11 @@
           hash = "sha256-b79NJOACK8pT+ZQEL+rI5MfqkYfMUGrU2Hj3mGyUNIA=";
         };
 
-        spanishTtsModel = pkgs.fetchurl {
-          url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/sharvard/medium/es_ES-sharvard-medium.onnx";
-          sha256 = "sha256-QP6/sWecaaRQX/MR3BNuEh40GaE6KQ7yZP30Pd7dD7E=";
-        };
-        spanishTtsConfig = pkgs.fetchurl {
-          url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/sharvard/medium/es_ES-sharvard-medium.onnx.json";
-          sha256 = "sha256-dDjJtpnHKwwziNrhto0/Nk3GaiFQ/lVKHBHwM3KVeyw=";
+        # Supertonic 3 (sherpa-onnx export): one multilingual model, Croatian
+        # selected at runtime with lang = "hr". License: OpenRAIL.
+        ttsModelDir = pkgs.fetchzip {
+          url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2";
+          hash = "sha256-UNN4akgwwdqLdC/T8avL/JGDhLyZ1Y57kqgzfxeayPA=";
         };
       in {
         packages.default = rustApp;
@@ -81,8 +79,7 @@
         #   shellHook = ''
         #     # you still need model paths, etc.
         #     export MODEL="${model}"
-        #     export SPANISH_TTS_MODEL="${spanishTtsModel}"
-        #     export SPANISH_TTS_CONFIG="${spanishTtsConfig}"
+        #     export TTS_MODEL_DIR="${ttsModelDir}"
         #   '';
         # };
 
@@ -105,8 +102,8 @@
               cmake
             ];
             #            ELECTRON_OVERRIDE_DIST_PATH = "${electron}/bin";
-            SPANISH_TTS_MODEL = spanishTtsModel;
-            SPANISH_TTS_CONFIG = spanishTtsConfig;
+            TTS_MODEL_DIR = ttsModelDir;
+            TTS_LANG = "hr";
 
             RUSTFLAGS = "-L${voskLib}";
             LD_LIBRARY_PATH = lib.makeLibraryPath [
