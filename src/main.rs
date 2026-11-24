@@ -36,7 +36,63 @@ fn silence_alsa() {
 //  Listener ──(transcript: String)──▶ LlmClient ──(reply: String)──▶ Talker
 //      ▲                                                              │
 //      └──────────────── speaking: AtomicBool (mutes mic) ◀───────────┘
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Debug)]
+enum AppError {
+    Listener(listen::ListenerError),
+    Talker(talk::TalkerError),
+    Thread(std::io::Error),
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Listener(e) => write!(f, "listener: {e}"),
+            Self::Talker(e) => write!(f, "talker: {e}"),
+            Self::Thread(e) => write!(f, "could not spawn thread: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Listener(e) => Some(e),
+            Self::Talker(e) => Some(e),
+            Self::Thread(e) => Some(e),
+        }
+    }
+}
+
+impl From<listen::ListenerError> for AppError {
+    fn from(e: listen::ListenerError) -> Self {
+        Self::Listener(e)
+    }
+}
+
+impl From<talk::TalkerError> for AppError {
+    fn from(e: talk::TalkerError) -> Self {
+        Self::Talker(e)
+    }
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Thread(e)
+    }
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::debug!(error = ?e, "fatal");
+            ui::failure(&e.to_string());
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), AppError> {
     // stdout = the conversation (see ui.rs); stderr = diagnostics.
     // Quiet by default; RUST_LOG=assistant=debug for the full picture.
     tracing_subscriber::fmt()
@@ -57,9 +113,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let speaking = Arc::new(AtomicBool::new(false));
 
     ui::status("loading models…");
-    let listener = Listener::new();
+    let listener = Listener::new()?;
     let llm = LlmClient::new();
-    let talker = Talker::new();
+    let talker = Talker::new()?;
     ui::status(&format!(
         "ready · llm {} · say \"stop\" to finish",
         llm.model()

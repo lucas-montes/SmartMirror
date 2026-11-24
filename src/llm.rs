@@ -14,15 +14,61 @@ Ambos textos se leerán en voz alta: no uses markdown, listas, emojis ni símbol
 
 #[derive(Debug)]
 pub enum LlmError {
-    Http(String),
-    Parse(String),
+    /// Ollama answered, but with an error status (e.g. 404 for an unknown model)
+    Status { status: u16, body: String },
+    /// Couldn't reach Ollama at all (not running, wrong URL, timeout…)
+    Transport {
+        url: String,
+        source: Box<ureq::Transport>,
+    },
+    /// The HTTP response body couldn't be read/decoded
+    Body(std::io::Error),
+    /// The model's content didn't match the {translation, response} schema
+    Format {
+        raw: String,
+        source: serde_json::Error,
+    },
 }
 
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Http(m) => write!(f, "http error: {m}"),
-            Self::Parse(m) => write!(f, "parse error: {m}"),
+            Self::Status { status, body } => write!(f, "ollama returned {status}: {body}"),
+            Self::Transport { url, source } => write!(f, "could not reach ollama at {url}: {source}"),
+            Self::Body(e) => write!(f, "could not read the ollama response: {e}"),
+            Self::Format { raw, source } => write!(f, "unexpected llm output ({source}): {raw}"),
+        }
+    }
+}
+
+impl std::error::Error for LlmError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Status { .. } => None,
+            Self::Transport { source, .. } => Some(source.as_ref()),
+            Self::Body(e) => Some(e),
+            Self::Format { source, .. } => Some(source),
+        }
+    }
+}
+
+impl From<std::io::Error> for LlmError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Body(e)
+    }
+}
+
+impl LlmError {
+    fn from_ureq(err: ureq::Error, url: &str) -> Self {
+        match err {
+            ureq::Error::Status(status, resp) => Self::Status {
+                status,
+                body: resp.into_string().unwrap_or_default(),
+            },
+            ureq::Error::Transport(t) => Self::Transport {
+                url: url.to_string(),
+                source: Box::new(t),
+            },
         }
     }
 }
@@ -119,16 +165,13 @@ impl LlmClient {
                 stream: false,
                 format: answer_schema(),
             })
-            .map_err(|e| LlmError::Http(e.to_string()))
-            .and_then(|resp| {
-                resp.into_json::<ChatResponse>()
-                    .map_err(|e| LlmError::Parse(e.to_string()))
-            })
+            .map_err(|e| LlmError::from_ureq(e, &self.url))
+            .and_then(|resp| Ok(resp.into_json::<ChatResponse>()?))
             .and_then(|resp| {
                 let raw = resp.message.content;
                 match serde_json::from_str::<Answer>(&raw) {
                     Ok(answer) => Ok((raw, answer)),
-                    Err(e) => Err(LlmError::Parse(format!("{e}: {raw}"))),
+                    Err(source) => Err(LlmError::Format { raw, source }),
                 }
             });
 

@@ -48,7 +48,9 @@
               "x86_64" = "sha256-ToMDbD5ooFMHU0nNlfpLynF29kkfMknBluKO5PipLFY=";
               "aarch64" = "sha256-Pve91VpfVAXMY3dqbE9U1gkfQtedHOXj4ikGlWKyezQ=";
             }
-            .${arch};
+            .${
+              arch
+            };
         };
 
         model = pkgs.fetchzip {
@@ -65,43 +67,20 @@
       in {
         packages.default = rustApp;
 
-        # devShells.default = pkgs.mkShell {
-        #   name = "assistant-dev";
-
-        #   # 2. just pull in your package:
-        #   buildInputs = [
-        #     myPackage
-        #     pkgs.rust-bin.stable.latest.default.override { extensions = [ "rust-src" ]; }
-        #     pkgs.alsa-utils
-        #   ];
-
-        #   # 3. and any extra tooling you need
-        #   shellHook = ''
-        #     # you still need model paths, etc.
-        #     export MODEL="${model}"
-        #     export TTS_MODEL_DIR="${ttsModelDir}"
-        #   '';
-        # };
-
         devShells.default = with pkgs;
           mkShell {
             name = "Assistant";
             buildInputs = [
               alsa-utils
               alsa-lib
-              #alsa-plugins
               openssl
               pkg-config
               rust-bin-custom
-
-              # nodejs_23
-              # electron
 
               libclang
               clang
               cmake
             ];
-            #            ELECTRON_OVERRIDE_DIST_PATH = "${electron}/bin";
             TTS_MODEL_DIR = ttsModelDir;
             TTS_LANG = "hr";
 
@@ -109,7 +88,6 @@
             LD_LIBRARY_PATH = lib.makeLibraryPath [
               pkgs.stdenv.cc.cc
               voskLib
-              #              pkgs.alsa-lib
             ];
 
             MODEL = model;

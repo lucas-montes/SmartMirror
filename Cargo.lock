@@ -57,7 +57,6 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "dasp",
- "hound",
  "serde",
  "serde_json",
  "sherpa-onnx",
@@ -604,12 +603,6 @@ checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest",
 ]
-
-[[package]]
-name = "hound"
-version = "3.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "hybrid-array"

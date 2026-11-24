@@ -10,13 +10,54 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
+use crate::ui;
 use tracing::{debug, error, instrument, trace, warn};
 
 #[derive(Debug)]
 pub enum TalkerError {
+    MissingEnv(&'static str),
+    MissingModelFile(PathBuf),
+    ModelInit(PathBuf),
+    NoOutputDevice,
     TextToAudio(String),
-    StreamCreation(String),
-    StreamPlay(String),
+    StreamCreation(cpal::BuildStreamError),
+    StreamPlay(cpal::PlayStreamError),
+}
+
+impl std::fmt::Display for TalkerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingEnv(var) => write!(f, "environment variable {var} is not set"),
+            Self::MissingModelFile(p) => write!(f, "tts model file not found: {}", p.display()),
+            Self::ModelInit(p) => write!(f, "could not load the tts model from {}", p.display()),
+            Self::NoOutputDevice => write!(f, "no output device available"),
+            Self::TextToAudio(text) => write!(f, "speech synthesis failed for: {text:?}"),
+            Self::StreamCreation(e) => write!(f, "could not build the output stream: {e}"),
+            Self::StreamPlay(e) => write!(f, "could not start the output stream: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for TalkerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::StreamCreation(e) => Some(e),
+            Self::StreamPlay(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<cpal::BuildStreamError> for TalkerError {
+    fn from(e: cpal::BuildStreamError) -> Self {
+        Self::StreamCreation(e)
+    }
+}
+
+impl From<cpal::PlayStreamError> for TalkerError {
+    fn from(e: cpal::PlayStreamError) -> Self {
+        Self::StreamPlay(e)
+    }
 }
 
 pub struct Talker {
@@ -37,9 +78,9 @@ impl Talker {
     }
 
     #[instrument(name = "talker_new", skip_all)]
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, TalkerError> {
         let model_dir: PathBuf = std::env::var("TTS_MODEL_DIR")
-            .expect("TTS_MODEL_DIR not set")
+            .map_err(|_| TalkerError::MissingEnv("TTS_MODEL_DIR"))?
             .into();
         let lang = std::env::var("TTS_LANG").unwrap_or_else(|_| "hr".into());
         // Supertonic 3 ships 10 voices (0..=9)
@@ -52,23 +93,23 @@ impl Talker {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0);
 
-        let file = |name: &str| -> Option<String> {
+        let file = |name: &str| -> Result<Option<String>, TalkerError> {
             let p = model_dir.join(name);
             if !p.exists() {
-                error!(path = %p.display(), "missing tts model file");
+                return Err(TalkerError::MissingModelFile(p));
             }
-            Some(p.to_string_lossy().into_owned())
+            Ok(Some(p.to_string_lossy().into_owned()))
         };
         let config = OfflineTtsConfig {
             model: OfflineTtsModelConfig {
                 supertonic: OfflineTtsSupertonicModelConfig {
-                    duration_predictor: file("duration_predictor.int8.onnx"),
-                    text_encoder: file("text_encoder.int8.onnx"),
-                    vector_estimator: file("vector_estimator.int8.onnx"),
-                    vocoder: file("vocoder.int8.onnx"),
-                    tts_json: file("tts.json"),
-                    unicode_indexer: file("unicode_indexer.bin"),
-                    voice_style: file("voice.bin"),
+                    duration_predictor: file("duration_predictor.int8.onnx")?,
+                    text_encoder: file("text_encoder.int8.onnx")?,
+                    vector_estimator: file("vector_estimator.int8.onnx")?,
+                    vocoder: file("vocoder.int8.onnx")?,
+                    tts_json: file("tts.json")?,
+                    unicode_indexer: file("unicode_indexer.bin")?,
+                    voice_style: file("voice.bin")?,
                 },
                 num_threads: 2,
                 debug: false,
@@ -79,7 +120,7 @@ impl Talker {
 
         debug!(dir = %model_dir.display(), %lang, speaker, speed, "loading supertonic model");
         let start = Instant::now();
-        let tts = OfflineTts::create(&config).expect("Failed to create OfflineTts");
+        let tts = OfflineTts::create(&config).ok_or(TalkerError::ModelInit(model_dir.clone()))?;
         debug!(
             elapsed = ?start.elapsed(),
             sample_rate = tts.sample_rate(),
@@ -96,7 +137,7 @@ impl Talker {
 
         let device = host
             .default_output_device()
-            .expect("No output device available");
+            .ok_or(TalkerError::NoOutputDevice)?;
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
         debug!(device = %device_name, "using output device");
 
@@ -128,14 +169,14 @@ impl Talker {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        Self {
+        Ok(Self {
             tts,
             lang,
             speaker,
             speed,
             cpal_config: config,
             device,
-        }
+        })
     }
 
     #[instrument(skip_all)]
@@ -161,10 +202,7 @@ impl Talker {
                     true
                 }),
             )
-            .ok_or_else(|| {
-                error!("synthesis failed");
-                TalkerError::TextToAudio("supertonic generation failed".into())
-            })?;
+            .ok_or_else(|| TalkerError::TextToAudio(text.clone()))?;
         let samples = audio.samples().to_vec();
         let sample_rate = audio.sample_rate() as u32;
 
@@ -229,15 +267,9 @@ impl Talker {
                 |err| error!(error = %err, "output stream error"),
                 None,
             )
-            .map_err(|err| {
-                error!(error = %err, config = ?self.cpal_config, "failed to build output stream");
-                TalkerError::StreamCreation(err.to_string())
-            })?;
+            .inspect_err(|_| debug!(config = ?self.cpal_config, "output stream config rejected"))?;
 
-        stream.play().map_err(|err| {
-            error!(error = %err, "failed to start output stream");
-            TalkerError::StreamPlay(err.to_string())
-        })?;
+        stream.play()?;
         debug!("stream playing");
 
         let duration_secs =
@@ -269,7 +301,8 @@ impl Talker {
         for text in replies {
             speaking.store(true, Ordering::SeqCst);
             if let Err(e) = self.say(text) {
-                error!(error = ?e, "failed to speak reply");
+                error!(error = %e, "failed to speak reply");
+                ui::failure(&e.to_string());
             }
             // Small tail so the room echo dies down before the mic comes back
             thread::sleep(std::time::Duration::from_millis(300));

@@ -17,10 +17,60 @@ use tracing::{debug, error, trace, warn};
 use dasp::{sample::ToSample, Sample};
 use vosk::{DecodingState, Model, Recognizer};
 
+#[derive(Debug)]
 pub enum ListenerError {
-    TextToAudio(String),
-    StreamCreation(String),
-    StreamPlay(String),
+    MissingEnv(&'static str),
+    NoInputDevice,
+    InputConfig(cpal::DefaultStreamConfigError),
+    Model(String),
+    Recognizer { sample_rate: u32 },
+    StreamCreation(cpal::BuildStreamError),
+    StreamPlay(cpal::PlayStreamError),
+}
+
+impl std::fmt::Display for ListenerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingEnv(var) => write!(f, "environment variable {var} is not set"),
+            Self::NoInputDevice => write!(f, "no input device available"),
+            Self::InputConfig(e) => write!(f, "could not get the input device config: {e}"),
+            Self::Model(path) => write!(f, "could not load the vosk model at {path}"),
+            Self::Recognizer { sample_rate } => {
+                write!(f, "could not create the vosk recognizer ({sample_rate} Hz)")
+            }
+            Self::StreamCreation(e) => write!(f, "could not build the input stream: {e}"),
+            Self::StreamPlay(e) => write!(f, "could not start the input stream: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ListenerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InputConfig(e) => Some(e),
+            Self::StreamCreation(e) => Some(e),
+            Self::StreamPlay(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<cpal::DefaultStreamConfigError> for ListenerError {
+    fn from(e: cpal::DefaultStreamConfigError) -> Self {
+        Self::InputConfig(e)
+    }
+}
+
+impl From<cpal::BuildStreamError> for ListenerError {
+    fn from(e: cpal::BuildStreamError) -> Self {
+        Self::StreamCreation(e)
+    }
+}
+
+impl From<cpal::PlayStreamError> for ListenerError {
+    fn from(e: cpal::PlayStreamError) -> Self {
+        Self::StreamPlay(e)
+    }
 }
 
 pub struct Listener {
@@ -35,8 +85,8 @@ impl Listener {
         self.cpal_config.channels
     }
 
-    pub fn new() -> Self {
-        let model_path = std::env::var("MODEL").expect("stt model not found");
+    pub fn new() -> Result<Self, ListenerError> {
+        let model_path = std::env::var("MODEL").map_err(|_| ListenerError::MissingEnv("MODEL"))?;
 
         if let Ok(devices) = cpal::default_host().input_devices() {
             let names: Vec<_> = devices.filter_map(|d| d.name().ok()).collect();
@@ -44,11 +94,9 @@ impl Listener {
         }
         let device = cpal::default_host()
             .default_input_device()
-            .expect("No input device connected");
+            .ok_or(ListenerError::NoInputDevice)?;
 
-        let config = device
-            .default_input_config()
-            .expect("Failed to load default input config");
+        let config = device.default_input_config()?;
         debug!(
             device = %device.name().unwrap_or_else(|_| "<unknown>".into()),
             channels = config.channels(),
@@ -57,9 +105,10 @@ impl Listener {
             "using input device"
         );
 
-        let model = Model::new(model_path).expect("Could not create the model");
-        let mut recognizer = Recognizer::new(&model, config.sample_rate().0 as f32)
-            .expect("Could not create the Recognizer");
+        let model = Model::new(model_path.as_str()).ok_or(ListenerError::Model(model_path))?;
+        let sample_rate = config.sample_rate().0;
+        let mut recognizer = Recognizer::new(&model, sample_rate as f32)
+            .ok_or(ListenerError::Recognizer { sample_rate })?;
 
         let max_alternatives = 0;
         recognizer.set_nlsml(true);
@@ -67,12 +116,12 @@ impl Listener {
         recognizer.set_words(true);
         recognizer.set_partial_words(true);
 
-        Self {
+        Ok(Self {
             recognizer: Arc::new(Mutex::new(recognizer)),
             cpal_config: config.into(),
             device,
             max_alternatives,
-        }
+        })
     }
 
     /// Listens until a stop word is heard, sending each transcript on `transcripts`.
@@ -81,7 +130,7 @@ impl Listener {
         &self,
         transcripts: Sender<String>,
         speaking: Arc<AtomicBool>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), ListenerError> {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&running);
         let channels = self.channels();
@@ -192,8 +241,8 @@ fn stereo_to_mono(input_data: &[i16]) -> Vec<i16> {
     let mut result = Vec::with_capacity(input_data.len() / 2);
     result.extend(
         input_data
-            .chunks_exact(2)
-            .map(|chunk| chunk[0] / 2 + chunk[1] / 2),
+            .as_chunks::<2>().0.iter()
+            .map(|[chunk0, chunk1]| chunk0 / 2 + chunk1 / 2),
     );
 
     result
