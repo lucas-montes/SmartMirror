@@ -7,7 +7,7 @@ mod talk;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = Listener::new();
 
-    let talker = Talker::new();
+    let mut talker = Talker::new();
 
     listener.run().expect("listenner running brake");
     talker

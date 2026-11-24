@@ -1,8 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use piper_rs::synth::{AudioOutputConfig, PiperSpeechSynthesizer};
-use piper_rs::VitsModel;
+use piper_rs::Piper;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread;
 
 #[derive(Debug)]
@@ -13,7 +11,7 @@ pub enum TalkerError {
 }
 
 pub struct Talker {
-    synth: PiperSpeechSynthesizer,
+    piper: Piper,
     cpal_config: cpal::StreamConfig,
     device: cpal::Device,
 }
@@ -33,7 +31,8 @@ impl Talker {
             .expect("tts model not found")
             .into();
 
-        let model = VitsModel::new(config_path, &onxx_path).expect("Models not found");
+        // NOTE: 0.2.0 takes (model, config), the reverse of 0.1.x
+        let piper = Piper::new(&onxx_path, &config_path).expect("Models not found");
 
         println!(
             "{:?}",
@@ -57,33 +56,22 @@ impl Talker {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let synth = PiperSpeechSynthesizer::new(Arc::new(model)).expect("synthesizer didnt work");
-
         Self {
-            synth,
+            piper,
             cpal_config: config,
             device,
         }
     }
 
-    fn audio_output_config() -> AudioOutputConfig {
-        AudioOutputConfig {
-            rate: Some(7),
-            volume: None,
-            pitch: None,
-            appended_silence_ms: None,
-        }
-    }
-
-    pub fn text_to_audio(&self, text: String) -> Result<Vec<f32>, TalkerError> {
-        let mut samples: Vec<f32> = Vec::new();
-        let audio = self
-            .synth
-            .synthesize_parallel(text, Some(Self::audio_output_config()))
+    pub fn text_to_audio(&mut self, text: String) -> Result<Vec<f32>, TalkerError> {
+        // create(text, is_phonemes, speaker_id, length_scale, noise_scale, noise_w)
+        // length_scale controls speed: < 1.0 faster, > 1.0 slower (None = model default)
+        let (samples, sample_rate) = self
+            .piper
+            .create(&text, false, None, None, None, None)
             .map_err(|err| TalkerError::TextToAudio(err.to_string()))?;
-        for result in audio {
-            samples.append(&mut result.unwrap().into_vec());
-        }
+        // Use the model's real sample rate instead of assuming 22050
+        self.cpal_config.sample_rate = cpal::SampleRate(sample_rate);
         Ok(samples)
     }
 
@@ -122,7 +110,7 @@ impl Talker {
         Ok(())
     }
 
-    pub fn run(&self, text: String) -> Result<(), TalkerError> {
+    pub fn run(&mut self, text: String) -> Result<(), TalkerError> {
         let samples = self.text_to_audio(text)?;
         self.play_audio(samples)
     }

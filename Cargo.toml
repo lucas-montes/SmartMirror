@@ -6,6 +6,6 @@ edition = "2021"
 [dependencies]
 cpal = "0.15.3"
 hound = "3.5.1"
-piper-rs = "0.1.9"
-vosk = "0.3.1"
 dasp = "0.11"
+vosk = "0.3.1"
+piper-rs = "0.2.0"
